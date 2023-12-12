@@ -11,6 +11,7 @@ import (
 
 	"github.com/ledgerwatch/erigon-lib/chain"
 	"github.com/ledgerwatch/erigon-lib/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
@@ -781,4 +782,296 @@ func (i *MapTxNum2BlockNumIter) Next() (txNum, blockNum uint64, txIndex int, isF
 	txIndex = int(txNum) - int(i.minTxNumInBlock) - 1
 	isFinalTxn = txNum == i.maxTxNumInBlock
 	return
+}
+
+// GetERCBlockReceipts - erc receipts
+// func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, number rpc.BlockNumber) ([]map[string]interface{}, error) {
+func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber, from rpc.BlockNumber) ([]map[string]interface{}, error) {
+	tx, err := api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	start := to.Int64()
+	end := from.Int64()
+
+	chainConfig, err := api.chainConfig(tx)
+	if err != nil {
+		return nil, err
+	}
+	engine := api.engine()
+
+	blocks := make([]map[string]interface{}, 0)
+	for ; start <= end; start++ {
+		blockNum, _, _, err := rpchelper.GetBlockNumber(rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(start)), tx, api.filters)
+		if err != nil {
+			return nil, err
+		}
+		block, err := api.blockByNumberWithSenders(ctx, tx, blockNum)
+		if err != nil {
+			return nil, err
+		}
+		if block == nil {
+			return nil, nil
+		}
+
+		// Trasfers
+		signer := types.MakeSigner(chainConfig, block.NumberU64(), block.Time())
+		rules := chainConfig.Rules(block.NumberU64(), block.Time())
+		_, blockCtx, _, ibs, _, err := transactions.ComputeTxEnv(ctx, engine, block, chainConfig, api._blockReader, tx, 0, api.historyV3(tx))
+		if err != nil {
+			return nil, err
+		}
+
+		receipts, err := api.getReceipts(ctx, tx, chainConfig, block, block.Body().SendersFromTxs())
+		if err != nil {
+			return nil, fmt.Errorf("getReceipts error: %w", err)
+		}
+		result := make([]map[string]interface{}, 0, len(receipts))
+		for _, receipt := range receipts {
+			marhaledReciept, err := queryERCTransaction(engine, ctx, chainConfig, signer, rules, blockCtx, ibs, receipt, block)
+			if err == nil {
+				result = append(result, marhaledReciept)
+			}
+		}
+
+		if chainConfig.Bor != nil {
+			borTx := rawdb.ReadBorTransactionForBlock(tx, blockNum)
+			if borTx != nil {
+				borReceipt, err := rawdb.ReadBorReceipt(tx, block.Hash(), block.NumberU64(), receipts)
+				if err != nil {
+					return nil, err
+				}
+				if borReceipt != nil {
+					result = append(result, marshalReceiptPruned(borReceipt, borTx, chainConfig, block, borReceipt.TxHash, false))
+				}
+			}
+		}
+
+		blocks = append(blocks, map[string]interface{}{
+			"number":        block.Number().Int64(),
+			"timestamp":     block.Time(),
+			"baseFeePerGas": (*hexutil.Big)(block.BaseFee()),
+			"transactions":  result,
+		})
+	}
+
+	return blocks, nil
+}
+
+func (api *APIImpl) GetERCTransactionReceipt(ctx context.Context, txnHash common.Hash) (map[string]any, error) {
+	tx, err := api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var blockNum uint64
+	var ok bool
+
+	blockNum, ok, err = api.txnLookup(ctx, tx, txnHash)
+	if err != nil {
+		return nil, err
+	}
+
+	cc, err := api.chainConfig(tx)
+	if err != nil {
+		return nil, err
+	}
+	engine := api.engine()
+
+	if !ok && cc.Bor == nil {
+		return nil, nil
+	}
+
+	// if not ok and cc.Bor != nil then we might have a bor transaction.
+	// Note that Private API returns 0 if transaction is not found.
+	if !ok || blockNum == 0 {
+		blockNumPtr, err := rawdb.ReadBorTxLookupEntry(tx, txnHash)
+		if err != nil {
+			return nil, err
+		}
+		if blockNumPtr == nil {
+			return nil, nil
+		}
+
+		blockNum = *blockNumPtr
+	}
+
+	block, err := api.blockByNumberWithSenders(ctx, tx, blockNum)
+	if err != nil {
+		return nil, err
+	}
+	if block == nil {
+		return nil, nil // not error, see https://github.com/ledgerwatch/erigon/issues/1645
+	}
+
+	var txnIndex uint64
+	var txn types.Transaction
+	for idx, transaction := range block.Transactions() {
+		if transaction.Hash() == txnHash {
+			txn = transaction
+			txnIndex = uint64(idx)
+			break
+		}
+	}
+
+	var borTx types.Transaction
+	if txn == nil {
+		borTx = rawdb.ReadBorTransactionForBlock(tx, blockNum)
+		if borTx == nil {
+			return nil, nil
+		}
+	}
+
+	receipts, err := api.getReceipts(ctx, tx, cc, block, block.Body().SendersFromTxs())
+	if err != nil {
+		return nil, fmt.Errorf("getReceipts error: %w", err)
+	}
+
+	if txn == nil {
+		borReceipt, err := rawdb.ReadBorReceipt(tx, block.Hash(), blockNum, receipts)
+		if err != nil {
+			return nil, err
+		}
+		if borReceipt == nil {
+			return nil, nil
+		}
+		// return marshalReceipt(borReceipt, borTx, cc, block.HeaderNoCopy(), txnHash, false), nil
+		return marshalReceiptPruned(borReceipt, borTx, cc, block, borReceipt.TxHash, false), nil
+	}
+
+	if len(receipts) <= int(txnIndex) {
+		return nil, fmt.Errorf("block has less receipts than expected: %d <= %d, block: %d", len(receipts), int(txnIndex), blockNum)
+	}
+
+	signer := types.MakeSigner(cc, block.NumberU64(), block.Time())
+	rules := cc.Rules(block.NumberU64(), block.Time())
+	_, blockCtx, _, ibs, _, err := transactions.ComputeTxEnv(ctx, engine, block, cc, api._blockReader, tx, 0, api.historyV3(tx))
+	if err != nil {
+		return nil, err
+	}
+
+	marhaledReciept, err := queryERCTransaction(engine, ctx, cc, signer, rules, blockCtx, ibs, receipts[txnIndex], block)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"transaction": marhaledReciept,
+		"block": map[string]any{
+			"number":        block.Number().Int64(),
+			"timestamp":     block.Time(),
+			"baseFeePerGas": (*hexutil.Big)(block.BaseFee()),
+		},
+	}, nil
+}
+
+func queryERCTransaction(
+	engine consensus.EngineReader,
+	ctx context.Context,
+	chainConfig *chain.Config,
+	signer *types.Signer,
+	rules *chain.Rules,
+	blockCtx evmtypes.BlockContext,
+	ibs *state.IntraBlockState,
+	receipt *types.Receipt,
+	block *types.Block,
+) (map[string]any, error) {
+	txn := block.Transactions()[receipt.TransactionIndex]
+	marhaledReciept := marshalReceiptPruned(receipt, txn, chainConfig, block, txn.Hash(), true)
+	marhaledReciept["positionInBlock"] = receipt.TransactionIndex
+
+	// Trasfers
+	idx := int(receipt.TransactionIndex)
+	ibs.SetTxContext(txn.Hash(), block.Hash(), idx)
+	msg, _ := txn.AsMessage(*signer, block.BaseFee(), rules)
+	if msg.FeeCap().IsZero() && engine != nil {
+		syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
+			return core.SysCallContract(contract, data, chainConfig, ibs, block.Header(), engine, true /* constCall */)
+		}
+		msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
+	}
+	txCtx := core.NewEVMTxContext(msg)
+	tracer := NewOperationsTracer(ctx)
+	var vmConfig vm.Config
+	if tracer == nil {
+		vmConfig = vm.Config{}
+	} else {
+		vmConfig = vm.Config{Debug: true, Tracer: tracer}
+	}
+	vmenv := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, vmConfig)
+	_, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()).AddDataGas(msg.DataGas()), true, false /* gasBailout */)
+	if err == nil {
+		marhaledReciept["transfers"] = tracer.Results
+	}
+
+	return marhaledReciept, nil
+}
+
+func marshalReceiptPruned(receipt *types.Receipt, txn types.Transaction, chainConfig *chain.Config, block *types.Block, txnHash common.Hash, signed bool) map[string]interface{} {
+	var chainId *big.Int
+	switch t := txn.(type) {
+	case *types.LegacyTx:
+		if t.Protected() {
+			chainId = types.DeriveChainId(&t.V).ToBig()
+		}
+	default:
+		chainId = txn.GetChainID().ToBig()
+	}
+
+	var from common.Address
+	if signed {
+		signer := types.LatestSignerForChainID(chainId)
+		from, _ = txn.Sender(*signer)
+	}
+
+	fields := map[string]interface{}{
+		"hash":            txnHash,
+		"nonce":           txn.GetNonce(),
+		"type":            txn.Type(),
+		"from":            from,
+		"to":              txn.GetTo(),
+		"value":           (*hexutil.Big)(txn.GetValue().ToBig()),
+		"inputData":       hexutility.Encode(txn.GetData()),
+		"contractAddress": nil,
+		"gasLimit":        (*hexutil.Big)(new(big.Int).SetUint64(txn.GetGas())),
+		"gasUsage":        (*hexutil.Big)(new(big.Int).SetUint64(receipt.GasUsed)),
+		"status":          receipt.Status,
+	}
+
+	if chainConfig.IsLondon(block.NumberU64()) {
+		baseFee, _ := uint256.FromBig(block.BaseFee())
+		gasPrice := new(big.Int).Add(block.BaseFee(), txn.GetEffectiveGasTip(baseFee).ToBig())
+		fields["gasPrice"] = (*hexutil.Big)(gasPrice)
+	} else {
+		fields["gasPrice"] = (*hexutil.Big)(txn.GetPrice().ToBig())
+	}
+
+	if txn.Type() == 2 {
+		fields["gasFeeMax"] = (*hexutil.Big)(txn.GetFeeCap().ToBig())
+		fields["gasFeesMaxPriority"] = (*hexutil.Big)(txn.GetTip().ToBig())
+	}
+
+	if receipt.Logs == nil {
+		fields["logs"] = make(types.Logs, 0)
+	} else {
+		logs := make([]map[string]interface{}, len(receipt.Logs))
+		for i, log := range receipt.Logs {
+			logs[i] = map[string]interface{}{
+				"address": log.Address,
+				"topics":  log.Topics,
+				"data":    hexutility.Encode(log.Data),
+				"index":   log.Index,
+			}
+		}
+
+		fields["logs"] = logs
+	}
+	// If the ContractAddress is 20 0x0 bytes, assume it is not a contract creation
+	if receipt.ContractAddress != (common.Address{}) {
+		fields["contractAddress"] = receipt.ContractAddress
+	}
+	return fields
 }

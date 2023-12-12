@@ -61,6 +61,10 @@ type EthAPI interface {
 	GetLogs(ctx context.Context, crit ethFilters.FilterCriteria) (types.Logs, error)
 	GetBlockReceipts(ctx context.Context, numberOrHash rpc.BlockNumberOrHash) ([]map[string]interface{}, error)
 
+	// ERC Methods
+	GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber, from rpc.BlockNumber) ([]map[string]interface{}, error)
+	GetERCTransactionReceipt(ctx context.Context, hash common.Hash) (map[string]interface{}, error)
+
 	// Uncle related (see ./eth_uncles.go)
 	GetUncleByBlockNumberAndIndex(ctx context.Context, blockNr rpc.BlockNumber, index hexutil.Uint) (map[string]interface{}, error)
 	GetUncleByBlockHashAndIndex(ctx context.Context, hash common.Hash, index hexutil.Uint) (map[string]interface{}, error)
