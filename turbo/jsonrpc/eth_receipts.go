@@ -785,7 +785,6 @@ func (i *MapTxNum2BlockNumIter) Next() (txNum, blockNum uint64, txIndex int, isF
 }
 
 // GetERCBlockReceipts - erc receipts
-// func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, number rpc.BlockNumber) ([]map[string]interface{}, error) {
 func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber, from rpc.BlockNumber) ([]map[string]interface{}, error) {
 	tx, err := api.db.BeginRo(ctx)
 	if err != nil {
