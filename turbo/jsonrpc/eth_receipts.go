@@ -829,10 +829,8 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 		}
 		result := make([]map[string]interface{}, 0, len(receipts))
 		for _, receipt := range receipts {
-			marhaledReciept, err := queryERCTransaction(engine, ctx, chainConfig, signer, rules, blockCtx, ibs, receipt, block)
-			if err == nil {
-				result = append(result, marhaledReciept)
-			}
+			marhaledReciept := queryERCTransaction(engine, ctx, chainConfig, signer, rules, blockCtx, ibs, receipt, block)
+			result = append(result, marhaledReciept)
 		}
 
 		if chainConfig.Bor != nil {
@@ -952,10 +950,7 @@ func (api *APIImpl) GetERCTransactionReceipt(ctx context.Context, txnHash common
 		return nil, err
 	}
 
-	marhaledReciept, err := queryERCTransaction(engine, ctx, cc, signer, rules, blockCtx, ibs, receipts[txnIndex], block)
-	if err != nil {
-		return nil, err
-	}
+	marhaledReciept := queryERCTransaction(engine, ctx, cc, signer, rules, blockCtx, ibs, receipts[txnIndex], block)
 
 	return map[string]any{
 		"transaction": marhaledReciept,
@@ -977,7 +972,7 @@ func queryERCTransaction(
 	ibs *state.IntraBlockState,
 	receipt *types.Receipt,
 	block *types.Block,
-) (map[string]any, error) {
+) map[string]any {
 	txn := block.Transactions()[receipt.TransactionIndex]
 	marhaledReciept := marshalReceiptPruned(receipt, txn, chainConfig, block, txn.Hash(), true)
 	marhaledReciept["positionInBlock"] = receipt.TransactionIndex
@@ -994,19 +989,14 @@ func queryERCTransaction(
 	}
 	txCtx := core.NewEVMTxContext(msg)
 	tracer := NewOperationsTracer(ctx)
-	var vmConfig vm.Config
-	if tracer == nil {
-		vmConfig = vm.Config{}
-	} else {
-		vmConfig = vm.Config{Debug: true, Tracer: tracer}
-	}
+	vmConfig := vm.Config{Debug: true, Tracer: tracer}
 	vmenv := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, vmConfig)
 	_, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()).AddDataGas(msg.DataGas()), true, false /* gasBailout */)
 	if err == nil {
 		marhaledReciept["transfers"] = tracer.Results
 	}
 
-	return marhaledReciept, nil
+	return marhaledReciept
 }
 
 func marshalReceiptPruned(receipt *types.Receipt, txn types.Transaction, chainConfig *chain.Config, block *types.Block, txnHash common.Hash, signed bool) map[string]interface{} {

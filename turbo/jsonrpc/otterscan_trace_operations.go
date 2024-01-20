@@ -6,6 +6,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 
 	"github.com/ledgerwatch/erigon/core/vm"
 )
@@ -23,6 +24,7 @@ type InternalOperation struct {
 	Type  OperationType  `json:"type"`
 	From  common.Address `json:"from"`
 	To    common.Address `json:"to"`
+	Input string         `json:"input"`
 	Value *hexutil.Big   `json:"value"`
 }
 
@@ -41,16 +43,16 @@ func NewOperationsTracer(ctx context.Context) *OperationsTracer {
 
 func (t *OperationsTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, precompile bool, create bool, input []byte, gas uint64, value *uint256.Int, code []byte) {
 	if typ == vm.CALL && value.Uint64() != 0 {
-		t.Results = append(t.Results, &InternalOperation{OP_TRANSFER, from, to, (*hexutil.Big)(value.ToBig())})
+		t.Results = append(t.Results, &InternalOperation{OP_TRANSFER, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 		return
 	}
 	if typ == vm.CREATE {
-		t.Results = append(t.Results, &InternalOperation{OP_CREATE, from, to, (*hexutil.Big)(value.ToBig())})
+		t.Results = append(t.Results, &InternalOperation{OP_CREATE, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 	}
 	if typ == vm.CREATE2 {
-		t.Results = append(t.Results, &InternalOperation{OP_CREATE2, from, to, (*hexutil.Big)(value.ToBig())})
+		t.Results = append(t.Results, &InternalOperation{OP_CREATE2, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 	}
 	if typ == vm.SELFDESTRUCT {
-		t.Results = append(t.Results, &InternalOperation{OP_SELF_DESTRUCT, from, to, (*hexutil.Big)(value.ToBig())})
+		t.Results = append(t.Results, &InternalOperation{OP_SELF_DESTRUCT, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 	}
 }
