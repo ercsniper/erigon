@@ -52,7 +52,7 @@ func (t *OperationsTracer) CaptureEnter(typ vm.OpCode, from common.Address, to c
 	if typ == vm.CREATE2 {
 		t.Results = append(t.Results, &InternalOperation{OP_CREATE2, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 	}
-	if typ == vm.SELFDESTRUCT {
+	if typ == vm.SELFDESTRUCT && value.Uint64() != 0 {
 		t.Results = append(t.Results, &InternalOperation{OP_SELF_DESTRUCT, from, to, hexutility.Encode(input), (*hexutil.Big)(value.ToBig())})
 	}
 }
