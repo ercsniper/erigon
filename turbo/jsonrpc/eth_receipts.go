@@ -21,6 +21,8 @@ import (
 	"github.com/ledgerwatch/erigon/eth/ethutils"
 
 	"github.com/ledgerwatch/erigon/consensus"
+	"github.com/ledgerwatch/erigon/consensus/ethash"
+	"github.com/ledgerwatch/erigon/consensus/misc"
 	"github.com/ledgerwatch/erigon/core"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
@@ -803,11 +805,15 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 
 	blocks := make([]map[string]interface{}, 0)
 	for ; start <= end; start++ {
-		blockNum, _, _, err := rpchelper.GetBlockNumber(rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(start)), tx, api.filters)
+		var (
+			totalFees uint64
+		)
+
+		blockNum, hash, _, err := rpchelper.GetBlockNumber(rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(start)), tx, api.filters)
 		if err != nil {
 			return nil, err
 		}
-		block, err := api.blockByNumberWithSenders(ctx, tx, blockNum)
+		block, err := api.blockWithSenders(ctx, tx, hash, blockNum)
 		if err != nil {
 			return nil, err
 		}
@@ -831,6 +837,18 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 		for _, receipt := range receipts {
 			marhaledReciept := queryERCTransaction(engine, ctx, chainConfig, signer, rules, blockCtx, ibs, receipt, block)
 			result = append(result, marhaledReciept)
+
+			// Gas Fee Calculation
+			txn := block.Transactions()[receipt.TransactionIndex]
+			effectiveGasPrice := uint64(0)
+			if !chainConfig.IsLondon(block.NumberU64()) {
+				effectiveGasPrice = txn.GetPrice().Uint64()
+			} else {
+				baseFee, _ := uint256.FromBig(block.BaseFee())
+				gasPrice := new(big.Int).Add(block.BaseFee(), txn.GetEffectiveGasTip(baseFee).ToBig())
+				effectiveGasPrice = gasPrice.Uint64()
+			}
+			totalFees += effectiveGasPrice * receipt.GasUsed
 		}
 
 		if chainConfig.Bor != nil {
@@ -846,15 +864,50 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 			}
 		}
 
+		issuance, _ := api.delegateIssuance(tx, block, chainConfig)
+
 		blocks = append(blocks, map[string]interface{}{
 			"number":        block.Number().Int64(),
 			"timestamp":     block.Time(),
 			"baseFeePerGas": (*hexutil.Big)(block.BaseFee()),
+			"gasUsed":       hexutil.Uint64(block.GasUsed()),
+			"miner":         block.Coinbase(),
+			"issuance":      issuance.Issuance,
+			"totalFees":     hexutil.Uint64(totalFees),
 			"transactions":  result,
 		})
 	}
 
 	return blocks, nil
+}
+
+func (api *APIImpl) delegateIssuance(tx kv.Tx, block *types.Block, chainConfig *chain.Config) (internalIssuance, error) {
+	if chainConfig.Ethash == nil {
+		// Clique for example has no issuance
+		return internalIssuance{}, nil
+	}
+
+	if chainConfig.TerminalTotalDifficulty != nil {
+		isPos := block.HeaderNoCopy().Difficulty.Cmp(common.Big0) == 0 || block.HeaderNoCopy().Difficulty.Cmp(chainConfig.TerminalTotalDifficulty) >= 0
+		if isPos {
+			// No execution layer issuance in PoS
+			return internalIssuance{}, nil
+		}
+	}
+
+	minerReward, uncleRewards := ethash.AccumulateRewards(chainConfig, block.Header(), block.Uncles())
+	issuance := minerReward
+	for _, r := range uncleRewards {
+		p := r // avoids warning?
+		issuance.Add(&issuance, &p)
+	}
+
+	var ret internalIssuance
+	ret.BlockReward = hexutil.EncodeBig(minerReward.ToBig())
+	ret.Issuance = hexutil.EncodeBig(issuance.ToBig())
+	issuance.Sub(&issuance, &minerReward)
+	ret.UncleReward = hexutil.EncodeBig(issuance.ToBig())
+	return ret, nil
 }
 
 func (api *APIImpl) GetERCTransactionReceipt(ctx context.Context, txnHash common.Hash) (map[string]any, error) {
