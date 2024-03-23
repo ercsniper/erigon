@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 
 	"github.com/RoaringBitmap/roaring"
+	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/log/v3"
 
 	"github.com/ledgerwatch/erigon-lib/chain"
 	"github.com/ledgerwatch/erigon-lib/common"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/hexutil"
 	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
@@ -22,7 +25,6 @@ import (
 
 	"github.com/ledgerwatch/erigon/consensus"
 	"github.com/ledgerwatch/erigon/consensus/ethash"
-	"github.com/ledgerwatch/erigon/consensus/misc"
 	"github.com/ledgerwatch/erigon/core"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
@@ -813,7 +815,7 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 		if err != nil {
 			return nil, err
 		}
-		block, err := api.blockWithSenders(ctx, tx, hash, blockNum)
+		block, err := api.blockWithSenders(tx, hash, blockNum)
 		if err != nil {
 			return nil, err
 		}
@@ -920,7 +922,7 @@ func (api *APIImpl) GetERCTransactionReceipt(ctx context.Context, txnHash common
 	var blockNum uint64
 	var ok bool
 
-	blockNum, ok, err = api.txnLookup(ctx, tx, txnHash)
+	blockNum, ok, err = api.txnLookup(tx, txnHash)
 	if err != nil {
 		return nil, err
 	}
@@ -949,7 +951,7 @@ func (api *APIImpl) GetERCTransactionReceipt(ctx context.Context, txnHash common
 		blockNum = *blockNumPtr
 	}
 
-	block, err := api.blockByNumberWithSenders(ctx, tx, blockNum)
+	block, err := api.blockByNumberWithSenders(tx, blockNum)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,7 +1046,7 @@ func queryERCTransaction(
 	tracer := NewOperationsTracer(ctx)
 	vmConfig := vm.Config{Debug: true, Tracer: tracer}
 	vmenv := vm.NewEVM(blockCtx, txCtx, ibs, chainConfig, vmConfig)
-	_, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()).AddDataGas(msg.DataGas()), true, false /* gasBailout */)
+	_, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()).AddGas(msg.Gas()), true, false /* gasBailout */)
 	if err == nil {
 		marhaledReciept["transfers"] = tracer.Results
 	}

@@ -1,6 +1,7 @@
 package caplincli
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ledgerwatch/erigon-lib/common/datadir"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon/cl/clparams"
 	"github.com/ledgerwatch/erigon/cl/phase1/core/state"
 	"github.com/ledgerwatch/erigon/cmd/caplin/caplinflags"
@@ -121,11 +123,20 @@ func ObtainJwtSecret(ctx *cli.Context) ([]byte, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
-	}
-	jwtSecret := common.FromHex(strings.TrimSpace(string(data)))
-	if len(jwtSecret) == 32 {
+		jwtSecret := make([]byte, 32)
+		rand.Read(jwtSecret)
+
+		if err := os.WriteFile(path, []byte(hexutility.Encode(jwtSecret)), 0600); err != nil {
+			return nil, err
+		}
+		fmt.Println("Generated JWT secret", "path", path)
+
 		return jwtSecret, nil
+	} else {
+		jwtSecret := common.FromHex(strings.TrimSpace(string(data)))
+		if len(jwtSecret) == 32 {
+			return jwtSecret, nil
+		}
 	}
 
 	return nil, fmt.Errorf("Invalid JWT secret at %s, invalid size", path)
