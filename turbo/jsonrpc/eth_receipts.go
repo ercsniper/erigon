@@ -808,7 +808,7 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 	blocks := make([]map[string]interface{}, 0)
 	for ; start <= end; start++ {
 		var (
-			totalFees uint64
+			totalFees = big.NewInt(0)
 		)
 
 		blockNum, hash, _, err := rpchelper.GetBlockNumber(rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(start)), tx, api.filters)
@@ -842,15 +842,16 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 
 			// Gas Fee Calculation
 			txn := block.Transactions()[receipt.TransactionIndex]
-			effectiveGasPrice := uint64(0)
+			var effectiveGasPrice *big.Int
 			if !chainConfig.IsLondon(block.NumberU64()) {
-				effectiveGasPrice = txn.GetPrice().Uint64()
+				effectiveGasPrice = txn.GetPrice().ToBig()
 			} else {
 				baseFee, _ := uint256.FromBig(block.BaseFee())
 				gasPrice := new(big.Int).Add(block.BaseFee(), txn.GetEffectiveGasTip(baseFee).ToBig())
-				effectiveGasPrice = gasPrice.Uint64()
+				effectiveGasPrice = gasPrice
 			}
-			totalFees += effectiveGasPrice * receipt.GasUsed
+			fee := new(big.Int).Mul(effectiveGasPrice, new(big.Int).SetUint64(receipt.GasUsed))
+			totalFees = new(big.Int).Add(totalFees, fee)
 		}
 
 		if chainConfig.Bor != nil {
@@ -875,7 +876,7 @@ func (api *APIImpl) GetERCBlockReceipts(ctx context.Context, to rpc.BlockNumber,
 			"gasUsed":       hexutil.Uint64(block.GasUsed()),
 			"miner":         block.Coinbase(),
 			"issuance":      issuance.Issuance,
-			"totalFees":     hexutil.Uint64(totalFees),
+			"totalFees":     hexutil.EncodeBig(totalFees),
 			"transactions":  result,
 		})
 	}
